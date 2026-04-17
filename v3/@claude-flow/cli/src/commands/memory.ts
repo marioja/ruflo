@@ -589,11 +589,27 @@ const statsCommand: Command = {
         newestEntry: string | null;
       };
 
+      // Probe embedding provider (non-blocking, best-effort)
+      let embeddingProvider = 'none';
+      let embeddingDimensions = 0;
+      let hnswAvailable = false;
+      try {
+        const { loadEmbeddingModel, getHNSWIndex } = await import('../memory/memory-initializer.js');
+        const embResult = await loadEmbeddingModel();
+        if (embResult.success) {
+          embeddingProvider = embResult.modelName;
+          embeddingDimensions = embResult.dimensions;
+        }
+        hnswAvailable = (await getHNSWIndex()) !== null;
+      } catch {
+        // memory-initializer not available
+      }
+
       const stats = {
         backend: statsResult.backend,
         entries: {
           total: statsResult.totalEntries,
-          vectors: 0, // Would need vector backend support
+          vectors: 0,
           text: statsResult.totalEntries
         },
         storage: {
@@ -602,7 +618,12 @@ const statsCommand: Command = {
         },
         version: statsResult.version,
         oldestEntry: statsResult.oldestEntry,
-        newestEntry: statsResult.newestEntry
+        newestEntry: statsResult.newestEntry,
+        embedding: {
+          provider: embeddingProvider,
+          dimensions: embeddingDimensions,
+          hnswAvailable
+        }
       };
 
       if (ctx.flags.format === 'json') {
@@ -626,6 +647,20 @@ const statsCommand: Command = {
           { metric: 'Total Entries', value: stats.entries.total.toLocaleString() },
           { metric: 'Total Storage', value: stats.storage.total },
           { metric: 'Location', value: stats.storage.location }
+        ]
+      });
+
+      output.writeln();
+      output.writeln(output.bold('Embedding'));
+      output.printTable({
+        columns: [
+          { key: 'metric', header: 'Metric', width: 20 },
+          { key: 'value', header: 'Value', width: 30, align: 'right' }
+        ],
+        data: [
+          { metric: 'Provider', value: stats.embedding.provider },
+          { metric: 'Dimensions', value: stats.embedding.dimensions > 0 ? String(stats.embedding.dimensions) : 'N/A' },
+          { metric: 'HNSW Index', value: stats.embedding.hnswAvailable ? 'active' : 'unavailable' }
         ]
       });
 
