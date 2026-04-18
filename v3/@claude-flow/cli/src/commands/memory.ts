@@ -577,48 +577,66 @@ const statsCommand: Command = {
   name: 'stats',
   description: 'Show memory statistics',
   action: async (ctx: CommandContext): Promise<CommandResult> => {
-    // Call MCP memory/stats tool for real statistics
     try {
-      const statsResult = await callMCPTool('memory_stats', {}) as {
-        totalEntries: number;
-        totalSize: string;
-        version: string;
-        backend: string;
-        location: string;
-        oldestEntry: string | null;
-        newestEntry: string | null;
-      };
+      const {
+        checkMemoryInitialization,
+        loadEmbeddingModel,
+        getHNSWIndex,
+        listEntries
+      } = await import('../memory/memory-initializer.js');
 
-      // Probe embedding provider (non-blocking, best-effort)
+      // DB location
+      const { join } = await import('path');
+      const dbPath = join(process.cwd(), '.swarm', 'memory.db');
+
+      // Version + backend from DB metadata
+      const memInfo = await checkMemoryInitialization(dbPath);
+
+      // Total entry count + newest entry (limit:1 returns total without fetching all rows)
+      let totalEntries = 0;
+      let newestEntry: string | null = null;
+      const listResult = await listEntries({ limit: 1 });
+      if (listResult.success) {
+        totalEntries = listResult.total;
+        newestEntry = listResult.entries[0]?.updatedAt || null;
+      }
+
+      // File size
+      let totalSize = '0 B';
+      try {
+        const { statSync } = await import('fs');
+        const stat = statSync(dbPath);
+        const kb = stat.size / 1024;
+        totalSize = kb >= 1024 ? `${(kb / 1024).toFixed(1)} MB` : `${kb.toFixed(1)} KB`;
+      } catch { /* db not yet created */ }
+
+      // Probe embedding provider (write to .swarm/embedding-provider.json happens inside loadEmbeddingModel)
       let embeddingProvider = 'none';
       let embeddingDimensions = 0;
       let hnswAvailable = false;
       try {
-        const { loadEmbeddingModel, getHNSWIndex } = await import('../memory/memory-initializer.js');
         const embResult = await loadEmbeddingModel();
         if (embResult.success) {
           embeddingProvider = embResult.modelName;
           embeddingDimensions = embResult.dimensions;
         }
         hnswAvailable = (await getHNSWIndex()) !== null;
-      } catch {
-        // memory-initializer not available
-      }
+      } catch { /* not available */ }
 
       const stats = {
-        backend: statsResult.backend,
+        backend: memInfo.backend || 'sql.js',
         entries: {
-          total: statsResult.totalEntries,
+          total: totalEntries,
           vectors: 0,
-          text: statsResult.totalEntries
+          text: totalEntries
         },
         storage: {
-          total: statsResult.totalSize,
-          location: statsResult.location
+          total: totalSize,
+          location: dbPath
         },
-        version: statsResult.version,
-        oldestEntry: statsResult.oldestEntry,
-        newestEntry: statsResult.newestEntry,
+        version: memInfo.version || '3.0.0',
+        oldestEntry: null as string | null,
+        newestEntry,
         embedding: {
           provider: embeddingProvider,
           dimensions: embeddingDimensions,
